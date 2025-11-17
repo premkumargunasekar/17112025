@@ -1,0 +1,89 @@
+- block:
+
+    - name: Match Region+Env in Env.csv
+      set_fact:
+        selected_block: "{{ item.Block }}"
+      loop: "{{ env_data }}"
+      when: item.RegionCode == req.RegionCode and item.Env == req.Env
+
+    - fail:
+        msg: "No matching block found for {{ req.RegionCode }}-{{ req.Env }}"
+      when: selected_block is not defined
+
+    - name: Calculate CIDR
+      script: "{{ calc_script }} {{ selected_block }} {{ req.SubnetSize }} {{ subnet_csv }}"
+      register: calc
+
+    - fail:
+        msg: "NO free subnet available in block {{ selected_block }}"
+      when: calc.stdout == "NO_AVAILABLE_SUBNET"
+
+    - set_fact:
+        new_cidr: "{{ calc.stdout | trim }}"
+
+    - name: Filter existing names
+      set_fact:
+        matched_names: >-
+          {{
+            subnet_data
+            | map(attribute='SubnetName')
+            | select('match', '^(?:' ~ req.RegionCode|lower ~ '-' ~ req.Env|lower ~ '-' ~ req.Solution|lower ~ '-).*-(\d{3})-snt$')
+            | list
+          }}
+
+    - name: Extract numbers
+      set_fact:
+        number_list: >-
+          {{
+            matched_names
+            | map('regex_search', '(\d{3})(?=-snt$)')
+            | reject('equalto', None)
+            | map('int')
+            | list
+          }}
+
+    - name: Determine last_number
+      set_fact:
+        last_number: "{{ number_list | max if number_list|length > 0 else 0 }}"
+
+    - name: Determine next_number
+      set_fact:
+        next_number: "{{ '%03d' | format(last_number|int + 1) }}"
+
+    - name: Build final SubnetName
+      set_fact:
+        SubnetName: "{{ (
+            req.RegionCode|lower ~ '-' ~
+            req.Env|lower ~ '-' ~
+            req.Solution|lower ~ '-' ~
+            next_number ~ '-snt'
+          ) | regex_replace('[^a-z0-9-]', '') | truncate(63, True, '') }}"
+
+    - name: Update Subnet.csv
+      lineinfile:
+        path: "{{ subnet_csv }}"
+        insertafter: EOF
+        line: "{{ req.RegionCode }},{{ req.Env }},{{ new_cidr }},{{ SubnetName }},NetworkTeam,Created,{{ req.Comments | default('NA') }}"
+
+    - name: Create subnet
+      google.cloud.gcp_compute_subnetwork:
+        name: "{{ SubnetName }}"
+        project: "{{ gcp_project }}"
+        region: "{{ region_map[req.RegionCode] }}"
+        ip_cidr_range: "{{ new_cidr }}"
+        network:
+          selfLink: "https://www.googleapis.com/compute/v1/projects/{{ gcp_project }}/global/networks/{{ req.VPC }}"
+        auth_kind: serviceaccount
+        state: present
+
+    - debug:
+        msg: "Created {{ new_cidr }} → {{ SubnetName }} in region {{ region_map[req.RegionCode] }}"
+
+  rescue:
+    - debug:
+        msg: "⚠️ Skipping subnet for {{ req.RegionCode }}-{{ req.Env }} because of an error. Continuing…"
+
+  always:
+    - set_fact:
+        selected_block: null
+        new_cidr: null
