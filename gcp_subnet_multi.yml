@@ -90,9 +90,9 @@
       community.general.mail:
         host: smtp.gmail.com
         port: 587
-        username: "{{ email_user }}"
-        password: "{{ email_password }}"
-        to: "{{ email_to }}"
+        username: "{{ premgkumardc@gmail.com }}"
+        password: "{{ jvpx gfpd yyta jkwe }}"
+        to: "{{ premgkumardc@gmail.com }}"
         subject: "GCP Subnet Creation Summary Report"
         subtype: html
         body: |
