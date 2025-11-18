@@ -1,4 +1,3 @@
----
 - block:
 
     - name: Match Region+Env in Env.csv
@@ -21,21 +20,14 @@
 
     - set_fact:
         new_cidr: "{{ calc.stdout | trim }}"
-        cidr_exists: false
 
-    #####################################################################
-    # GENERATE NEXT SUBNET NAME
-    #####################################################################
-
-    - name: Filter existing matching subnet names
+    - name: Filter existing names
       set_fact:
         matched_names: >-
           {{
             subnet_data
-            | selectattr("RegionCode", "equalto", req.RegionCode)
-            | selectattr("Env", "equalto", req.Env)
-            | selectattr("SubnetName", "search", req.Solution | lower)
-            | map(attribute="SubnetName")
+            | map(attribute='SubnetName')
+            | select('match', '^(?:' ~ req.RegionCode|lower ~ '-' ~ req.Env|lower ~ '-' ~ req.Solution|lower ~ '-).*-(\d{3})-snt$')
             | list
           }}
 
@@ -50,16 +42,13 @@
             | list
           }}
 
-    - name: Determine next_number (AWX safe)
+    - name: Determine last_number
       set_fact:
-        next_number: >-
-          {{
-            '%03d' | format(
-              (
-                (number_list | length > 0) | ternary(number_list | max, 0)
-              ) + 1
-            )
-          }}
+        last_number: "{{ number_list | max if number_list|length > 0 else 0 }}"
+
+    - name: Determine next_number
+      set_fact:
+        next_number: "{{ '%03d' | format(last_number|int + 1) }}"
 
     - name: Build final SubnetName
       set_fact:
@@ -70,19 +59,11 @@
             next_number ~ '-snt'
           ) | regex_replace('[^a-z0-9-]', '') | truncate(63, True, '') }}"
 
-    #####################################################################
-    # UPDATE CSV FILE
-    #####################################################################
-
-    - name: Append new subnet entry to Subnet.csv
+    - name: Update Subnet.csv
       lineinfile:
         path: "{{ subnet_csv }}"
         insertafter: EOF
         line: "{{ req.RegionCode }},{{ req.Env }},{{ new_cidr }},{{ SubnetName }},NetworkTeam,Created,{{ req.Comments | default('NA') }}"
-
-    #####################################################################
-    # CREATE SUBNET IN GCP
-    #####################################################################
 
     - name: Create subnet
       google.cloud.gcp_compute_subnetwork:
@@ -94,42 +75,15 @@
           selfLink: "https://www.googleapis.com/compute/v1/projects/{{ gcp_project }}/global/networks/{{ req.VPC }}"
         auth_kind: serviceaccount
         state: present
-      register: subnet_creation_result
 
     - debug:
-        msg: "Created {{ new_cidr }} → {{ SubnetName }}"
-
-    - name: Store SUCCESS result
-      set_fact:
-        subnet_results: "{{ subnet_results + [{
-          'Region': req.RegionCode,
-          'Env': req.Env,
-          'Solution': req.Solution,
-          'SubnetName': SubnetName,
-          'CIDR': new_cidr,
-          'Status': 'Created',
-          'Color': '#008000'
-        }] }}"
+        msg: "Created {{ new_cidr }} → {{ SubnetName }} in region {{ region_map[req.RegionCode] }}"
 
   rescue:
-
     - debug:
-        msg: "⚠️ Skipping subnet for {{ req.RegionCode }}-{{ req.Env }} due to error"
-
-    - name: Store FAILED result
-      set_fact:
-        subnet_results: "{{ subnet_results + [{
-          'Region': req.RegionCode,
-          'Env': req.Env,
-          'Solution': req.Solution,
-          'SubnetName': 'N/A',
-          'CIDR': 'N/A',
-          'Status': 'Failed',
-          'Color': '#FF0000'
-        }] }}"
+        msg: "⚠️ Skipping subnet for {{ req.RegionCode }}-{{ req.Env }} because of an error. Continuing…"
 
   always:
     - set_fact:
         selected_block: null
         new_cidr: null
-        SubnetName: null
