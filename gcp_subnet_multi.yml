@@ -114,9 +114,9 @@
       community.general.mail:
         host: smtp.gmail.com
         port: 587
-        username: "{{ email_user }}"
-        password: "{{ email_pass }}"
-        to: "{{ email_to }}"
+        username: "{{ premgkumardc@gmail.com }}"
+        password: "{{ jvpx gfpd yyta jkwe }}"
+        to: "{{ premkumaransible@gmail.com }}"
         subject: "GCP Multi-Subnet Report - {{ lookup('pipe', 'date +%Y-%m-%d_%H:%M') }}"
         subtype: html
         body: |
