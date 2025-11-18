@@ -16,6 +16,11 @@
       NA: us-central1
 
   tasks:
+
+    - name: Initialize summary array
+      set_fact:
+        subnet_results: []
+
     - fail:
         msg: "'subnets' variable missing"
       when: subnets is not defined
@@ -50,93 +55,54 @@
       loop_control:
         loop_var: req
 
-    ###################################################################
-    # AFTER LOOP — BUILD SUMMARY AND SEND EMAIL
-    ###################################################################
-
-    - name: Initialize results list
+    #####################################################################
+    # SEND EMAIL SUMMARY
+    #####################################################################
+    - name: Build final HTML email table
       set_fact:
-        subnet_results: []
-
-    # This collects results that subnet_unit.yml stored in "subnet_results"
-    # If not stored, we create empty default
-    - name: Ensure subnet_results exists
-      set_fact:
-        subnet_results: "{{ subnet_results | default([]) }}"
-
-    ###################################################################
-    # 1. BUILD HTML SUMMARY REPORT
-    ###################################################################
-    - name: Build HTML summary report
-      copy:
-        dest: "{{ playbook_dir }}/report.html"
-        content: |
-          <html>
-          <body>
-          <h2>GCP Multi-Subnet Creation Summary</h2>
-          <p>Date: {{ lookup('pipe', 'date') }}</p>
-
-          <table border="1" cellpadding="6" cellspacing="0"
-                 style="border-collapse: collapse; width: 100%; font-family: Arial;">
-            <tr style="background-color: #333; color: white;">
-              <th>Region</th>
-              <th>Env</th>
-              <th>Solution</th>
-              <th>CIDR</th>
-              <th>Subnet Name</th>
-              <th>Status</th>
-              <th>Comments</th>
-            </tr>
-
-            {% for row in subnet_results %}
-            <tr>
-              <td>{{ row.Region }}</td>
-              <td>{{ row.Env }}</td>
-              <td>{{ row.Solution }}</td>
-              <td>{{ row.CIDR }}</td>
-              <td>{{ row.SubnetName }}</td>
-              <td style="color: {{ row.Color }}; font-weight: bold;">
-                {{ row.Status }}
-              </td>
-              <td>{{ row.Comments }}</td>
-            </tr>
+        summary_html: |
+          <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; font-family: Arial; width: 100%;">
+            <thead>
+              <tr style="background-color:#4CAF50; color:white;">
+                <th>Region</th>
+                <th>Env</th>
+                <th>Solution</th>
+                <th>Subnet Name</th>
+                <th>Subnet CIDR</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for item in subnet_results %}
+              <tr>
+                <td>{{ item.Region }}</td>
+                <td>{{ item.Env }}</td>
+                <td>{{ item.Solution }}</td>
+                <td>{{ item.SubnetName }}</td>
+                <td>{{ item.CIDR }}</td>
+                <td style="color: {{ item.Color }};">{{ item.Status }}</td>
+              </tr>
             {% endfor %}
+            </tbody>
           </table>
 
-          <p style="margin-top: 20px;">Best regards,<br>Network Automation Team</p>
-          </body>
-          </html>
-
-    ###################################################################
-    # 2. SEND EMAIL WITH CSV + HTML REPORT ATTACHMENTS
-    ###################################################################
-    - name: Email updated CSVs + HTML Summary Report
+    - name: Send email summary
       community.general.mail:
         host: smtp.gmail.com
         port: 587
-        username: "{{ premgkumardc@gmail.com }}"
-        password: "{{ jvpx gfpd yyta jkwe }}"
-        to: "{{ premkumaransible@gmail.com }}"
-        subject: "GCP Multi-Subnet Report - {{ lookup('pipe', 'date +%Y-%m-%d_%H:%M') }}"
+        username: "{{ email_user }}"
+        password: "{{ email_password }}"
+        to: "{{ email_to }}"
+        subject: "GCP Subnet Creation Summary Report"
         subtype: html
         body: |
           <html>
             <body>
-              <h3>GCP Multi-Subnet Creation Summary</h3>
+              <p>Hello Team,<br><br>
+              Below is the complete summary of the subnet creation batch:</p>
+              {{ summary_html | safe }}
 
-              <p><b>Total Requests:</b> {{ subnets | length }}</p>
-              <p><b>Created:</b> {{ subnet_results | selectattr('Status','equalto','Created') | list | length }}</p>
-              <p><b>Already Exists:</b> {{ subnet_results | selectattr('Status','equalto','Already Exists') | list | length }}</p>
-              <p><b>Failed:</b> {{ subnet_results | selectattr('Status','equalto','Failed') | list | length }}</p>
-
-              <p>The full detailed report is attached as <b>report.html</b>.</p>
-
-              <p>Best regards,<br>Automation Bot</p>
+              <p><br>Regards,<br>Network Automation Team<br>
+              <small>This is an automated email. Do not reply.</small></p>
             </body>
           </html>
-        attachments:
-          - "{{ playbook_dir }}/data/Env.csv"
-          - "{{ playbook_dir }}/data/Subnet.csv"
-          - "{{ playbook_dir }}/data/Main.csv"
-          - "{{ playbook_dir }}/report.html"
-
