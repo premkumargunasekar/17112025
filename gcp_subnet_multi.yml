@@ -49,3 +49,94 @@
       loop: "{{ subnets }}"
       loop_control:
         loop_var: req
+
+    ###################################################################
+    # AFTER LOOP — BUILD SUMMARY AND SEND EMAIL
+    ###################################################################
+
+    - name: Initialize results list
+      set_fact:
+        subnet_results: []
+
+    # This collects results that subnet_unit.yml stored in "subnet_results"
+    # If not stored, we create empty default
+    - name: Ensure subnet_results exists
+      set_fact:
+        subnet_results: "{{ subnet_results | default([]) }}"
+
+    ###################################################################
+    # 1. BUILD HTML SUMMARY REPORT
+    ###################################################################
+    - name: Build HTML summary report
+      copy:
+        dest: "{{ playbook_dir }}/report.html"
+        content: |
+          <html>
+          <body>
+          <h2>GCP Multi-Subnet Creation Summary</h2>
+          <p>Date: {{ lookup('pipe', 'date') }}</p>
+
+          <table border="1" cellpadding="6" cellspacing="0"
+                 style="border-collapse: collapse; width: 100%; font-family: Arial;">
+            <tr style="background-color: #333; color: white;">
+              <th>Region</th>
+              <th>Env</th>
+              <th>Solution</th>
+              <th>CIDR</th>
+              <th>Subnet Name</th>
+              <th>Status</th>
+              <th>Comments</th>
+            </tr>
+
+            {% for row in subnet_results %}
+            <tr>
+              <td>{{ row.Region }}</td>
+              <td>{{ row.Env }}</td>
+              <td>{{ row.Solution }}</td>
+              <td>{{ row.CIDR }}</td>
+              <td>{{ row.SubnetName }}</td>
+              <td style="color: {{ row.Color }}; font-weight: bold;">
+                {{ row.Status }}
+              </td>
+              <td>{{ row.Comments }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+
+          <p style="margin-top: 20px;">Best regards,<br>Network Automation Team</p>
+          </body>
+          </html>
+
+    ###################################################################
+    # 2. SEND EMAIL WITH CSV + HTML REPORT ATTACHMENTS
+    ###################################################################
+    - name: Email updated CSVs + HTML Summary Report
+      community.general.mail:
+        host: smtp.gmail.com
+        port: 587
+        username: "{{ email_user }}"
+        password: "{{ email_pass }}"
+        to: "{{ email_to }}"
+        subject: "GCP Multi-Subnet Report - {{ lookup('pipe', 'date +%Y-%m-%d_%H:%M') }}"
+        subtype: html
+        body: |
+          <html>
+            <body>
+              <h3>GCP Multi-Subnet Creation Summary</h3>
+
+              <p><b>Total Requests:</b> {{ subnets | length }}</p>
+              <p><b>Created:</b> {{ subnet_results | selectattr('Status','equalto','Created') | list | length }}</p>
+              <p><b>Already Exists:</b> {{ subnet_results | selectattr('Status','equalto','Already Exists') | list | length }}</p>
+              <p><b>Failed:</b> {{ subnet_results | selectattr('Status','equalto','Failed') | list | length }}</p>
+
+              <p>The full detailed report is attached as <b>report.html</b>.</p>
+
+              <p>Best regards,<br>Automation Bot</p>
+            </body>
+          </html>
+        attachments:
+          - "{{ playbook_dir }}/data/Env.csv"
+          - "{{ playbook_dir }}/data/Subnet.csv"
+          - "{{ playbook_dir }}/data/Main.csv"
+          - "{{ playbook_dir }}/report.html"
+
