@@ -3,6 +3,8 @@
   hosts: 192.168.116.129
   gather_facts: no
   connection: ssh
+  become: yes
+  become_user: root
 
   vars:
     env_csv: "/opt/GCP/Env.csv"
