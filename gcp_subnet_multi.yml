@@ -1,13 +1,13 @@
 ---
 - name: Multi-Subnet IPAM + GCP Provisioning
-  hosts: localhost
+  hosts: 192.168.116.128
   gather_facts: no
-  connection: local
+  connection: ssh
 
   vars:
-    env_csv: "{{ playbook_dir }}/data/Env.csv"
-    subnet_csv: "{{ playbook_dir }}/data/Subnet.csv"
-    calc_script: "{{ playbook_dir }}/scripts/calc_next_subnet.py"
+    env_csv: "/opt/GCP/Env.csv"
+    subnet_csv: "/opt/GCP/Subnet.csv"
+    calc_script: "/opt/GCP/scripts/calc_next_subnet.py"
 
     region_map:
       AO: asia-south1
