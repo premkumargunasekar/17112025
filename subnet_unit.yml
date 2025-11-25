@@ -1,110 +1,139 @@
 ---
 # subnet_unit.yml
-# Handles ONE subnet request with auto-retry for GCP conflicts
+# Processes one subnet request from the "subnets" list
 
-- name: Match Region+Env in Env.csv
+- name: Select matching block from Env.csv
   set_fact:
     selected_block: "{{ item.Block }}"
-  when: item.RegionCode == req.RegionCode and item.Env == req.Env
   loop: "{{ env_data }}"
+  loop_control:
+    loop_var: item
+  when: item.RegionCode == req.RegionCode and item.Env == req.Env
+  no_log: false
 
 - name: Fail if block missing
   fail:
-    msg: "No matching block found for Region={{ req.RegionCode }} Env={{ req.Env }}"
+    msg: "No matching block found in Env.csv for Region={{ req.RegionCode }} Env={{ req.Env }}"
   when: selected_block is not defined
 
-# -------------------------------------------------------------------
-#  STEP 1: Calculate new CIDR using new GCP-aware calc script
-# -------------------------------------------------------------------
+# --------------------------------------------------------------------
+# Calculate next CIDR using updated PY script with GCP-aware conflict checking
+# --------------------------------------------------------------------
 - name: Calculate next available CIDR (GCP-aware)
   command: >
-    python3 {{ playbook_dir }}/scripts/calc_next_subnet.py
+    python3 {{ calc_script }}
     {{ selected_block }}
     {{ req.SubnetSize }}
-    {{ playbook_dir }}/data/Subnet.csv
+    {{ subnet_csv }}
     {{ gcp_project }}
     {{ region_map[req.RegionCode] }}
   register: calc
 
 - name: Stop if no CIDR available
   fail:
-    msg: "No available subnet left in block {{ selected_block }}"
+    msg: "No free CIDR left inside block {{ selected_block }}"
   when: calc.stdout == "NO_AVAILABLE_SUBNET"
 
 - set_fact:
     new_cidr: "{{ calc.stdout }}"
 
-# -------------------------------------------------------------------
-#  STEP 2: Build SubnetName (auto-numbering)
-# -------------------------------------------------------------------
+# --------------------------------------------------------------------
+# Extract existing names for numbering logic
+# --------------------------------------------------------------------
 - name: Filter existing names from CSV
   set_fact:
-    matched_names: "{{ subnet_data
-                       | selectattr('RegionCode','equalto',req.RegionCode)
-                       | selectattr('Env','equalto',req.Env)
-                       | selectattr('SubnetName','search', req.Solution)
-                       | map(attribute='SubnetName') | list }}"
+    matched_names: >-
+      {{
+        subnet_data
+        | selectattr('RegionCode','equalto', req.RegionCode)
+        | selectattr('Env','equalto', req.Env)
+        | selectattr('SubnetName','search', req.Solution)
+        | map(attribute='SubnetName')
+        | list
+      }}
 
-- name: Extract numbers from names
+- name: Extract numbers from names (safe)
   set_fact:
-    number_list: "{{ matched_names | map('regex_search', '\\d+') | select('!=', None) | map('int') | list }}"
+    number_list: >-
+      {{
+        matched_names
+        | map('regex_search', '([0-9]{3})', '\\1')
+        | map('default', 0)
+        | map('int')
+        | list
+      }}
 
 - name: Determine last_number
   set_fact:
-    last_number: "{{ (number_list | max) | default(0) }}"
+    last_number: "{{ number_list | default([0]) | max }}"
 
 - name: Determine next_number
   set_fact:
-    next_number: "{{ '%03d' % (last_number + 1) }}"
+    next_number: "{{ '%03d' % ((last_number | int) + 1) }}"
 
-- name: Build final Subnet Name
+# --------------------------------------------------------------------
+# Build final subnet name
+# Format: rc-env-solution-###-snt
+# Example: ao-pr-openshift-005-snt
+# --------------------------------------------------------------------
+- name: Build final SubnetName
   set_fact:
     SubnetName: "{{ req.RegionCode | lower }}-{{ req.Env }}-{{ req.Solution }}-{{ next_number }}-snt"
 
-# -------------------------------------------------------------------
-#  STEP 3: Try subnet creation — Retry if GCP conflict
-# -------------------------------------------------------------------
-- name: Create subnet in GCP
-  block:
-    - name: Create subnet
-      google.cloud.gcp_compute_subnetwork:
-        auth_kind: serviceaccount
-        service_account_file: "{{ gcp_sa_file }}"
-        project: "{{ gcp_project }}"
-        region: "{{ region_map[req.RegionCode] }}"
-        name: "{{ SubnetName }}"
-        ip_cidr_range: "{{ new_cidr }}"
-        network:
-          selfLink: "{{ vpc_selflink }}"
-        state: present
-      register: create_out
+# --------------------------------------------------------------------
+# Update Subnet.csv safely
+# --------------------------------------------------------------------
+- name: Normalize comment input
+  set_fact:
+    comment_value: "{{ req.Comments | default('') }}"
 
-  rescue:
-    - debug:
-        msg: "❗ CIDR or SubnetName conflict in GCP → Retrying with next CIDR..."
-
-    # Calculate new CIDR
-    - command: >
-        python3 {{ playbook_dir }}/scripts/calc_next_subnet.py
-        {{ selected_block }}
-        {{ req.SubnetSize }}
-        {{ playbook_dir }}/data/Subnet.csv
-        {{ gcp_project }}
-        {{ region_map[req.RegionCode] }}
-      register: calc_retry
-
-    - set_fact:
-        new_cidr: "{{ calc_retry.stdout }}"
-
-    - include_tasks: subnet_unit.yml   # retry same request
-
-    - meta: end_play
-
-# -------------------------------------------------------------------
-#  STEP 4: Update CSV after successful creation
-# -------------------------------------------------------------------
 - name: Update Subnet.csv
   lineinfile:
-    path: "{{ playbook_dir }}/data/Subnet.csv"
+    path: "{{ subnet_csv }}"
     insertafter: EOF
-    line: "{{ req.RegionCode }},{{ req.Env }},{{ new_cidr }},{{ SubnetName }},NetworkTeam,Created,{{ req.Comments }}"
+    line: "{{ req.RegionCode }},{{ req.Env }},{{ new_cidr }},{{ SubnetName }},NetworkTeam,Created,{{ comment_value }}"
+  when: new_cidr is defined
+
+# --------------------------------------------------------------------
+# Create subnet in GCP
+# --------------------------------------------------------------------
+- name: Create subnet
+  google.cloud.gcp_compute_subnetwork:
+    name: "{{ SubnetName }}"
+    project: "{{ gcp_project }}"
+    region: "{{ region_map[req.RegionCode] }}"
+    network:
+      selfLink: "https://www.googleapis.com/compute/v1/projects/{{ gcp_project }}/global/networks/{{ req.VPC }}"
+    ip_cidr_range: "{{ new_cidr }}"
+    state: present
+    auth_kind: serviceaccount
+    service_account_file: "{{ gcp_sa_file }}"
+    scopes:
+      - https://www.googleapis.com/auth/compute
+  register: sub_create
+  ignore_errors: true
+
+# --------------------------------------------------------------------
+# If GCP conflict, skip & continue instead of failing playbook
+# --------------------------------------------------------------------
+- name: Check GCP creation conflict
+  when: sub_create.failed
+  block:
+    - debug:
+        msg: "CIDR {{ new_cidr }} already exists in GCP. Skipping creation for {{ SubnetName }}."
+
+    - set_fact:
+        new_cidr: null
+        selected_block: null
+
+# --------------------------------------------------------------------
+# Success message
+# --------------------------------------------------------------------
+- name: Debug success message
+  debug:
+    msg: "Created {{ new_cidr }} → {{ SubnetName }} in {{ region_map[req.RegionCode] }}"
+  when: not sub_create.failed and new_cidr is not none
+
+- set_fact:
+    new_cidr: null
+    selected_block: null
