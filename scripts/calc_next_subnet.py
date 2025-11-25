@@ -1,59 +1,78 @@
 #!/usr/bin/env python3
+
 import sys
 import ipaddress
 import csv
+import subprocess
+import json
 
-def error_and_exit(msg):
-    print(msg)
+# -----------------------------------------------
+# INPUTS
+# -----------------------------------------------
+if len(sys.argv) < 4:
+    print("Usage: calc_next_subnet.py <block> <size> <subnet_csv> <project> <region>")
     sys.exit(1)
 
-def load_existing_subnets(csv_path, block):
-    used = []
-    try:
-        with open(csv_path, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                cidr = row.get("SubnetCIDR") or row.get("SubnetCidr") or row.get("cidr")
-                if not cidr:
-                    continue
-                try:
-                    subnet = ipaddress.ip_network(cidr, strict=False)
-                    if subnet.subnet_of(block):
-                        used.append(subnet)
-                except:
-                    continue
-    except FileNotFoundError:
-        error_and_exit("CSV_NOT_FOUND")
-    return used
+block_cidr = sys.argv[1]              # Example: 192.168.48.0/20
+req_size = int(sys.argv[2])           # Example: 24
+csv_file = sys.argv[3]                # Subnet.csv path
+project = sys.argv[4]                 # GCP project ID
+region = sys.argv[5]                  # GCP region
 
-def calculate_free_subnet(block_str, subnet_size, csv_path):
+block = ipaddress.ip_network(block_cidr)
+
+# -----------------------------------------------
+# Step 1 — Read existing subnets from CSV
+# -----------------------------------------------
+used_cidrs = set()
+
+try:
+    with open(csv_file, newline='') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                used_cidrs.add(str(ipaddress.ip_network(row["SubnetCIDR"])))
+            except:
+                pass
+except FileNotFoundError:
+    # CSV empty or missing – skip
+    pass
+
+# -----------------------------------------------
+# Step 2 — Fetch used subnets from GCP
+# -----------------------------------------------
+def get_gcp_subnets(project, region):
     try:
-        block = ipaddress.ip_network(block_str, strict=False)
+        cmd = [
+            "gcloud", "compute", "subnetworks", "list",
+            f"--project={project}",
+            f"--regions={region}",
+            "--format=json"
+        ]
+        output = subprocess.check_output(cmd).decode()
+        data = json.loads(output)
+        cidrs = [item["ipCidrRange"] for item in data]
+        return set(cidrs)
     except:
-        error_and_exit("INVALID_BLOCK")
+        return set()
 
-    try:
-        new_prefix = int(subnet_size)
-        if new_prefix < block.prefixlen or new_prefix > 30:
-            error_and_exit("INVALID_SUBNET_SIZE")
-    except:
-        error_and_exit("INVALID_SUBNET_SIZE")
+gcp_used_cidrs = get_gcp_subnets(project, region)
 
-    used_subnets = load_existing_subnets(csv_path, block)
-    all_subnets = list(block.subnets(new_prefix=new_prefix))
-    free_subnets = [s for s in all_subnets if s not in used_subnets]
+# Combine CSV + GCP CIDRs
+all_used = used_cidrs.union(gcp_used_cidrs)
 
-    if not free_subnets:
-        print("NO_AVAILABLE_SUBNET")
-        return
+# -----------------------------------------------
+# Step 3 — Generate subnets from block and pick next free
+# -----------------------------------------------
+all_subnets = list(block.subnets(new_prefix=req_size))
 
-    print(str(free_subnets[0]))
+for sn in all_subnets:
+    if str(sn) not in all_used:
+        print(sn)
+        sys.exit(0)
 
-def main():
-    if len(sys.argv) != 4:
-        error_and_exit("USAGE: calc_next_subnet.py <block> <subnet_size> <csv_path>")
-    block, size, csv_path = sys.argv[1], sys.argv[2], sys.argv[3]
-    calculate_free_subnet(block, size, csv_path)
-
-if __name__ == "__main__":
-    main()
+# -----------------------------------------------
+# NO AVAILABLE SUBNET
+# -----------------------------------------------
+print("NO_AVAILABLE_SUBNET")
+sys.exit(0)
