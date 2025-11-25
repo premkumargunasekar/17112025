@@ -119,7 +119,7 @@
       selfLink: "https://www.googleapis.com/compute/v1/projects/{{ gcp_project }}/global/networks/{{ req.VPC }}"
     project: "{{ gcp_project }}"
     auth_kind: serviceaccount
-    service_account_file: "{{ gcp_sa_file }}"
+    service_account_file: "{{ tower_env.GOOGLE_CREDENTIALS }}"
   register: gcp_result
   ignore_errors: yes
 
